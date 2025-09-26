@@ -19,8 +19,6 @@ Live dashboard with map of bins and fill levels.
 
 Route optimization (Nearest Neighbor + 2-Opt).
 
-Driver PWA with collection checklist and QR-code bin validation.
-
 Backend (Flask + DB) for data storage and API.
 
 2. 🤖 AI Model
