@@ -1,0 +1,201 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Smart Waste — Multi-compartment Route</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css" />
+  <link rel="stylesheet" href="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.css"/>
+  <style>
+    html, body { height: 100%; margin: 0; font-family: system-ui, sans-serif; }
+    #bar { height: 64px; display:flex; align-items:center; gap:12px; padding:8px; border-bottom:1px solid #eee; flex-wrap:wrap; }
+    #map { height: calc(100vh - 64px); }
+    .pill { padding:6px 10px; border:1px solid #ddd; border-radius:999px; }
+    table.comp { border-collapse: collapse; width: 100%; margin-top: 6px; font-size: 13px;}
+    table.comp td { padding: 2px 6px; border-bottom: 1px dashed #eee; }
+    .bar { width:120px; height:10px; border:1px solid #ccc; border-radius:6px; overflow:hidden; display:inline-block; vertical-align:middle; }
+    .fill { height:100%; }
+  </style>
+</head>
+<body>
+  <div id="bar">
+    <div class="pill">
+      Truck:
+      <select id="truck"><option>truck-1</option><option>truck-2</option></select>
+      Kind:
+      <select id="kind">
+        <option value="plastic">plastic</option>
+        <option value="organic">organic</option>
+        <option value="metal">metal</option>
+        <option value="bread">bread</option>
+        <option value="paper">paper</option>
+        <option value="glass">glass</option>
+      </select>
+      <label><input id="onlyActive" type="checkbox" checked> Active</label>
+      <button id="apply">Apply</button>
+      <button id="plan">Plan route</button>
+      <label class="pill"><input id="auto" type="checkbox" checked> Auto plan</label>
+    </div>
+    <div class="pill"><span id="routeInfo">Route: (none)</span></div>
+  </div>
+
+  <div id="map"></div>
+
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="https://unpkg.com/leaflet-routing-machine@latest/dist/leaflet-routing-machine.js"></script>
+  <script>
+    const MIN_FULLNESS = 80;
+    const AUTO_COLLECT_RADIUS = 25; // meters
+    const KINDS = ["plastic","organic","metal","bread","paper","glass"];
+
+    const map = L.map('map').setView([34.7395, 10.7601], 13);
+    L.tileLayer('https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png', {maxZoom: 19}).addTo(map);
+
+    const truckSel = document.getElementById('truck');
+    const kindSel  = document.getElementById('kind');
+    const onlyAct  = document.getElementById('onlyActive');
+    const autoChk  = document.getElementById('auto');
+    const routeInfo= document.getElementById('routeInfo');
+
+    let truckMarker=null, routeCtrl=null, currentPlan=[];
+    const truckIcon = L.divIcon({
+  className: '',
+  html: '<div style="font-size:32px">🚛</div>',
+  iconSize: [32, 32],
+  iconAnchor: [16, 16]
+});
+
+    function colorFor(f){ if (f>=90) return '#e74c3c'; if (f>=50) return '#f39c12'; return '#2ecc71'; }
+    function binIcon(displayFullness){
+      const size=34, col=colorFor(displayFullness);
+      return L.divIcon({className:'', iconSize:[size,size], iconAnchor:[size/2,size/2],
+        html:`<div style="width:${size}px;height:${size}px;border-radius:10px;border:3px solid ${col};
+                      display:flex;align-items:center;justify-content:center;background:#fff;font-weight:600">
+                ${Math.round(displayFullness)}%
+              </div>`});
+    }
+
+    const binMarkers = new Map(); // id -> marker
+
+    function compRow(label, val){
+      const v = Math.max(0, Math.min(100, Number(val) || 0));
+      const col = v < 20 ? '#2ecc71' : v < 50 ? '#f1c40f' : v < 90 ? '#e67e22' : '#e74c3c';
+      return `<tr>
+        <td style="width:80px">${label}</td>
+        <td>${v}% &nbsp;<span class="bar"><span class="fill" style="width:${v}%;background:${col}"></span></span></td>
+      </tr>`;
+    }
+
+    async function loadBins(){
+      const p = new URLSearchParams();
+      if (onlyAct.checked) p.set('active','1');
+      p.set('kind', kindSel.value);           // selected kind drives filtering & marker label
+      p.set('min_fullness', String(MIN_FULLNESS));
+
+      const data = await fetch('/bins?'+p.toString()).then(r=>r.json());
+
+      binMarkers.forEach(m=>map.removeLayer(m));
+      binMarkers.clear();
+
+      data.forEach(b=>{
+        const disp = Number(b.display_fullness) || 0;   // label equals selected kind’s %
+        const m=L.marker([b.lat,b.lon],{icon:binIcon(disp)}).addTo(map).bindPopup(`
+          <b>${b.name}</b> (#${b.id})<br>
+          Battery: ${b.battery ?? 'n/a'}%<br>
+          <table class="comp">
+            ${KINDS.map(k => compRow(k, b.comps?.[k])).join('')}
+          </table>
+        `);
+        binMarkers.set(b.id, m);
+      });
+    }
+
+    async function collect(binId){
+      // Collect only the SELECTED kind when truck is close
+      await fetch('/collect',{
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({bin_id:binId, kind: kindSel.value})
+      });
+      await loadBins();
+      if (autoChk.checked) await planRoute();
+    }
+
+    async function updateTruck(){
+      const t = truckSel.value;
+      const j = await fetch('/latest?truck='+encodeURIComponent(t)).then(r=>r.json());
+      if (j.lat==null || j.lon==null) return;
+      if (!truckMarker){
+        truckMarker = L.marker([j.lat,j.lon],{icon:truckIcon}).addTo(map).bindPopup('Truck: '+t);
+        map.setView([j.lat,j.lon], 14);
+      } else {
+        truckMarker.setLatLng([j.lat,j.lon]);
+      }
+      // auto-collect if near first stop
+      if (currentPlan.length){
+        const next = currentPlan[0]; // {id, name, lat, lon, fullness, kind}
+        const d = distanceMeters([j.lat,j.lon], [next.lat,next.lon]);
+        if (d < AUTO_COLLECT_RADIUS){
+          await collect(next.id);
+          currentPlan.shift();
+        }
+      }
+    }
+
+    function distanceMeters(a,b){
+      const [la1,lo1]=a,[la2,lo2]=b;
+      const R=6371000, toRad=(x)=>x*Math.PI/180;
+      const dlat=toRad(la2-la1), dlon=toRad(lo2-lo1);
+      const s=Math.sin(dlat/2)**2 + Math.cos(toRad(la1))*Math.cos(toRad(la2))*Math.sin(dlon/2)**2;
+      return 2*R*Math.asin(Math.sqrt(s));
+    }
+
+    async function planRoute(){
+      const body={ truck: truckSel.value, kind: kindSel.value, active: onlyAct.checked ? 1 : 0 };
+      const res = await fetch('/route',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)}).then(r=>r.json());
+      if (res.error){ routeInfo.textContent='Route error: '+res.error; return; }
+      currentPlan = res.ordered || [];
+
+      const latest = await fetch('/latest?truck='+encodeURIComponent(truckSel.value)).then(r=>r.json());
+      const wps = [L.latLng(latest.lat, latest.lon), ...currentPlan.map(p=>L.latLng(p.lat,p.lon))];
+
+      if (routeCtrl) map.removeControl(routeCtrl);
+      if (wps.length>=2){
+        routeCtrl = L.Routing.control({ waypoints: wps, show:false, routeWhileDragging:false }).addTo(map);
+        routeCtrl.on('routesfound', (e)=>{
+          const meters = e.routes?.[0]?.summary?.totalDistance || 0;
+          routeInfo.textContent = `Route (${currentPlan.length} bins, kind=${kindSel.value}): ~ ${(meters/1000).toFixed(2)} km`;
+        });
+      } else {
+        routeCtrl = null;
+        routeInfo.textContent = 'Route: (none)';
+      }
+    }
+
+    // Buttons
+    document.getElementById('apply').onclick = async ()=>{ await loadBins(); if (autoChk.checked) await planRoute(); };
+    document.getElementById('plan').onclick  = planRoute;
+
+    // Instant refresh when filters change (no need to click Apply)
+    kindSel.addEventListener('change', async ()=>{
+      await loadBins();
+      if (autoChk.checked) await planRoute();
+    });
+    onlyAct.addEventListener('change', async ()=>{
+      await loadBins();
+      if (autoChk.checked) await planRoute();
+    });
+
+    // Timers
+    setInterval(async ()=>{ if (autoChk.checked) await planRoute(); }, 6000);
+    setInterval(updateTruck, 2000);
+
+    // Boot
+    (async function(){
+      await loadBins();
+      await planRoute();
+      await updateTruck();
+    })();
+  </script>
+</body>
+</html>

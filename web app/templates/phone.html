@@ -1,0 +1,76 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <title>Camion — GPS</title>
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+</head>
+<body>
+  <h2>Camion — Envoi position</h2>
+  <p>Truck: <span id="truck"></span></p>
+  <p id="perm">Permission: (inconnue)</p>
+  <p id="status">En attente…</p>
+  <button id="start">Démarrer</button>
+  <button id="stop" disabled>Arrêter</button>
+  <button id="fake">FAKE (Sfax centre)</button>
+
+  <script>
+    const params = new URLSearchParams(location.search);
+    const truck = params.get('truck') || 'truck-1';
+    document.getElementById('truck').textContent = truck;
+
+    let watchId = null;
+    const permEl = document.getElementById('perm');
+    const statusEl = document.getElementById('status');
+    const setStatus = (m)=>{ statusEl.textContent = m; console.log(m); }
+    const explain = (e)=>({1:'PERMISSION_DENIED',2:'POSITION_UNAVAILABLE',3:'TIMEOUT'}[e.code]||'ERROR') + ` (${e.code}): ${e.message||''}`;
+
+    (async ()=>{
+      try{
+        if (navigator.permissions?.query){
+          const s = await navigator.permissions.query({name:'geolocation'});
+          permEl.textContent = 'Permission: ' + s.state;
+          s.onchange = ()=> permEl.textContent = 'Permission: ' + s.state;
+        }
+      }catch{}
+    })();
+
+    async function send(lat, lon){
+      await fetch('/update', {
+        method:'POST',
+        headers:{'Content-Type':'application/json'},
+        body: JSON.stringify({truck, lat, lon})
+      });
+      setStatus(`Envoyé: ${lat.toFixed(6)}, ${lon.toFixed(6)} (${truck})`);
+    }
+
+    document.getElementById('start').onclick = ()=>{
+      if (!('geolocation' in navigator)) return alert('Pas de geoloc');
+      document.getElementById('start').disabled = true;
+      document.getElementById('stop').disabled  = false;
+
+      navigator.geolocation.getCurrentPosition(
+        ({coords})=> send(coords.latitude, coords.longitude),
+        (err)=> setStatus('getCurrentPosition: ' + explain(err)),
+        { enableHighAccuracy:false, timeout:10000, maximumAge:0 }
+      );
+
+      watchId = navigator.geolocation.watchPosition(
+        ({coords})=> send(coords.latitude, coords.longitude),
+        (err)=> setStatus('watchPosition: ' + explain(err)),
+        { enableHighAccuracy:true, timeout:15000, maximumAge:2000 }
+      );
+    };
+
+    document.getElementById('stop').onclick = ()=>{
+      if (watchId!==null) navigator.geolocation.clearWatch(watchId);
+      watchId = null;
+      document.getElementById('start').disabled = false;
+      document.getElementById('stop').disabled  = true;
+      setStatus('Arrêté');
+    };
+
+    document.getElementById('fake').onclick = ()=> send(34.7395, 10.7601);
+  </script>
+</body>
+</html>
