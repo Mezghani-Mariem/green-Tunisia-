@@ -10,10 +10,21 @@ A web application for real-time monitoring and route optimization.
 
 An AI model (LSTM) to forecast bin fullness and schedule garbage truck trips efficiently.
 
+ESP32 firmware to convert ultrasonic sensor data into fill-level percentages.
+
 The project addresses key challenges such as overflowing bins, static collection schedules, high fuel consumption, and lack of real-time data.
 
 🗂 Project Components
-1. 🌐 Web Application
+1. 📡 IoT Firmware (ESP32)
+
+Reads distance using an ultrasonic sensor.
+
+Converts distance measurements into bin fill percentage.
+
+Sends the fill-level data  to the server.
+
+
+2. 🌐 Web Application
 
 Live dashboard with map of bins and fill levels.
 
@@ -21,7 +32,9 @@ Route optimization (Nearest Neighbor + 2-Opt).
 
 Backend (Flask + DB) for data storage and API.
 
-2. 🤖 AI Model
+Operator interface + Driver PWA with collection checklist.
+
+3. 🤖 AI Model
 
 LSTM neural network for short-term fill-level forecasting.
 
